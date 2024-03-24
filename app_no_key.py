@@ -1,10 +1,66 @@
 import assemblyai as aai
 import time
+import os
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-API_KEY = "API KEY"
+
+API_KEY = "YOUR KEY"
+
+CLIENT_FILE = "credentials.json"
+DOCUMENT_ID = "DOCUMENT ID"
+SCOPES = ["https://www.googleapis.com/auth/documents"]
+
+
+def update_google_docs(content):
+    creds = None
+    # The file token.json stores the user's access and refresh tokens, and is
+    # created automatically when the authorization flow completes for the first
+    # time.
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CLIENT_FILE, SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run
+        with open("token.json", "w") as token:
+            token.write(creds.to_json())
+
+    try:
+        service = build("docs", "v1", credentials=creds)
+
+        requests = [
+            {
+                'insertText' : {
+                    'text' : content,
+                    'endOfSegmentLocation' : {}
+                }
+            }
+        ]
+        result = service.documents().batchUpdate(
+            documentId = DOCUMENT_ID,
+            body = {'requests':requests}
+        ).execute()
+
+        # Retrieve the documents contents from the Docs service.
+        #document = service.documents().get(documentId=DOCUMENT_ID).execute()
+    except HttpError as err:
+        print(err)
+
+
+
 
 def lemur_call(transcript, prev_responses):
-    lemur = aai.Lemur
+    lemur = aai.Lemur()
     input_text = transcript
 
     prompt = f"""
@@ -25,6 +81,7 @@ def lemur_call(transcript, prev_responses):
             max_output_size=3000
         )
         print(response)
+        update_google_docs(response.response)
         return response.response
     except Exception as e:
         print("Error: ", e)
@@ -41,6 +98,7 @@ class TranscriptAccumulator:
         self.transcript += " " + transcript_segment
         current_time = time.time()
         if current_time - self.last_update_time >= 15:
+            print("\n CALLING LEMUR\n")
             self.lemur_output = lemur_call(self.transcript, self.prev_responses)
             self.prev_responses = self.lemur_output
             self.transcript = ""
@@ -66,8 +124,7 @@ def on_data(transcript: aai.RealtimeTranscript):
     
     if isinstance(transcript, aai.RealtimeFinalTranscript):
         print(transcript.text, end="\r\n")
-    #else:
-     #   print(transcript.text, end="\r")
+        transcript_accumulator.add_transcript(transcript.text)
 
 
 transcriber = aai.RealtimeTranscriber(
