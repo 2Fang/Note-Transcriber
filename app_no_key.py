@@ -13,9 +13,34 @@ API_KEY = "KEY"
 
 CLIENT_FILE = "credentials.json"
 DOCUMENT_ID = "DOC_ID"
+
 SCOPES = ["https://www.googleapis.com/auth/documents"]
 start_time = 0
 
+
+
+def get_doc_info():
+    creds = None
+    if os.path.exists("token.json"):
+        creds = Credentials.from_authorized_user_file("token.json", SCOPES)
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                CLIENT_FILE, SCOPES
+            )
+            creds = flow.run_local_server(port=0)
+        with open("token.json", "w") as token:
+            token.write(creds.to_json())
+
+    try:
+        service = build("docs", "v1", credentials=creds)
+        current_document = service.documents().get(documentId=DOCUMENT_ID).execute()
+        current_content = current_document.get('body').get('content', [])
+        transcript_accumulator.set_last_line(len(current_content))
+    except HttpError as err:
+        print(err)
 
 def update_google_docs(content, index):
     creds = None
@@ -45,13 +70,14 @@ def update_google_docs(content, index):
         current_content = current_document.get('body').get('content', [])
         transcript_accumulator.set_last_line(len(current_content))
 
-        if index >= 0:
+        if index >= 0 and index < len(current_content):
+            index = current_content[index]['startIndex']
             requests = [
                 {
                     'insertText' : {
                         'text' : content,
                         'location' : {
-                            'index' : index
+                            'index' : index - 1
                         }
                     }
                 }
@@ -65,6 +91,7 @@ def update_google_docs(content, index):
                     }
                 }
             ]
+
         result = service.documents().batchUpdate(
             documentId = DOCUMENT_ID,
             body = {'requests':requests}
@@ -93,13 +120,14 @@ def lemur_call(transcript, prev_responses, index):
     """
 
     prompt = f"""
-    You are a helpful assistant that is going to take notes based on what I tell you.
+    You are a helpful, diligent and succinct assistant that is going to take notes based on what I tell you.
 
     All I want you to do is repeat back what I say to you but to fix any spelling or grammatical mistakes you may suspect exist in the input.
     I am writing notes to you and I want you to format it in bullet point form, I have clearly indicated each bullet point by starting it with a * symbol.
 
     Avoid making up information not provided in the transcripts.
     Avoid preamble and remove any text formatting.
+    I dont want you to say anything like "here are the bullet points", just repeat back what I said in the formatted bullet point form that I've described to you.
     """
 
     try:
@@ -235,6 +263,7 @@ transcriber = aai.RealtimeTranscriber(
 )
 
 transcriber.connect()
+get_doc_info()
 
 microphone_stream = aai.extras.MicrophoneStream(sample_rate=16_000)
 
